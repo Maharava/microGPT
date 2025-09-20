@@ -1,0 +1,37 @@
+
+---
+
+## ⚠️ Weaknesses / Gaps
+1. **Tokenizer persistence:**  
+   - You’re saving only `special_tokens` in checkpoints, not the full tokenizer model. Inference reloads from `./tokenizer_data`, which assumes the directory is always present. If you move the checkpoint to another machine, it’ll break unless you also copy the tokenizer folder.  
+   - Fix: bundle the tokenizer files (vocab + merges) into the checkpoint or zip them alongside.
+
+2. **Validation split assumption:**  
+   - In streaming mode you assume a `validation` split exists. Many HF datasets don’t. That’ll throw errors.  
+   - Fix: fall back to slicing off a portion of `train` if `validation` isn’t available.
+
+3. **Spelling conversion edge cases:**  
+   - Words like `program` → `programme` will mangle computing contexts. You’ll want an exceptions list (e.g. “programming”, “parameters”, “thermometer”).  
+   - Otherwise you’ll corrupt code/data‑heavy corpora.
+
+4. **Training loop iteration logic:**  
+   - `get_batch` relies on `next(self.train_iter)` with no shuffling between epochs. For local datasets, that means deterministic order unless you wrap in a `RandomSampler`.  
+   - Fix: use `DataLoader(..., shuffle=True)` for local tensor datasets.
+
+5. **Model architecture:**  
+   - You’re still calling it `BigramLanguageModel`, but it’s now a multi‑layer transformer. The name is misleading.  
+   - Consider renaming to `TinyTransformerLM` or similar.
+
+6. **Inference UX:**  
+   - Right now the chat loop just echoes raw generations. You could improve readability by truncating at `<EOT>` and re‑prompting with role tags (`<USR>`, `<ASSIST>`). You’ve got the machinery, just need to enforce it.
+
+---
+
+## 🛠 Actionable Improvements
+- **Checkpointing:** Save tokenizer files with the checkpoint (or at least document that both must travel together).  
+- **Validation fallback:** Add a try/except around `StreamingTextDataset(..., split='validation')` and fallback to slicing train.  
+- **Spelling exceptions:** Add a small `EXCEPTIONS` set to skip replacements in technical contexts.  
+- **DataLoader shuffle:** For local datasets, wrap in `DataLoader(..., shuffle=True)` to avoid overfitting to sequence order.  
+- **Naming clarity:** Rename `BigramLanguageModel` to reflect its actual transformer nature.  
+- **Inference polish:** Enforce `<EOT>` truncation and role‑tag prompting for cleaner chat experience.
+
