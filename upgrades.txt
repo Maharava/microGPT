@@ -1,0 +1,90 @@
+Certainly. Here is more information on recent training efficiencies and a detailed explanation of how to save and load your model.
+
+Regarding more efficient training methods, your codebase is a couple of years old, and there have been significant improvements since then, especially for transformer models. Two of the most impactful and easy-to-implement methods are FlashAttention and Automatic Mixed Precision.
+
+1. FlashAttention and Fused Kernels.
+The self-attention part of a transformer is computationally expensive. Your code uses a version of PyTorch's MultiheadAttention or a manual implementation. Modern versions of PyTorch (2.0 and newer) have a much faster, memory-efficient attention implementation that is automatically used in many cases. This is often referred to as FlashAttention. By ensuring you are on a recent version of PyTorch, you may get some of these benefits automatically. For an even bigger boost, you could modify the model's forward pass to directly use `torch.nn.functional.scaled_dot_product_attention`, which is the most direct way to access this highly optimised kernel. This would involve replacing the manual attention calculations in your `Head` class.
+
+2. Automatic Mixed Precision (AMP).
+Your model currently performs all calculations using 32-bit floating point numbers (float32). Modern GPUs have specialised hardware (Tensor Cores) that can perform calculations much faster using 16-bit floats (float16). AMP allows you to use both, speeding up training and reducing memory usage by performing many operations in float16 while keeping critical parts like weight updates in float32 to maintain numerical stability.
+
+Implementing this in your training loop is straightforward. You would wrap the forward pass in an `autocast` context and use a `GradScaler` to prevent issues with the smaller numerical range of float16 gradients.
+
+Your `run` method in the `GPTTest` class would change from this:
+
+# evaluate the loss
+logits, loss = self.model(xb, yb)
+self.optimizer.zero_grad(set_to_none=True)
+loss.backward()
+self.optimizer.step()
+
+To this, with a scaler initialised outside the loop (`scaler = torch.cuda.amp.GradScaler()`):
+
+# evaluate the loss
+with torch.cuda.amp.autocast():
+    logits, loss = self.model(xb, yb)
+self.optimizer.zero_grad(set_to_none=True)
+scaler.scale(loss).backward()
+scaler.step(self.optimizer)
+scaler.update()
+
+Now, to elaborate on saving and loading the model.
+
+Saving and loading your progress is crucial for any machine learning project. It allows you to stop and resume training, share your trained model, and use it for inference without having to retrain it every time. The standard way to do this in PyTorch is by saving the model's `state_dict`.
+
+A `state_dict` is a Python dictionary that maps each layer in your model to its trainable parameters (weights and biases). Saving just the state dictionary is the recommended practice because it is more flexible than saving the entire model object.
+
+Here is how you would implement it:
+
+1. Saving the Model during Training.
+It's best to save a checkpoint, which is a dictionary containing not just the model's weights, but also the state of the optimizer, the current iteration number, and the latest loss. This allows you to resume training exactly where you left off.
+
+At the end of your `run` method, you can add the following to save a final checkpoint:
+
+print("Training finished. Saving checkpoint...")
+checkpoint = {
+    'model_state_dict': self.m.state_dict(),
+    'optimizer_state_dict': self.optimizer.state_dict(),
+    'iter': self.max_iters,
+    'val_loss': current_losses['val'],
+    'n_embd': self.n_embd,
+    'n_head': self.n_head,
+    'n_layer': self.n_layer,
+    'block_size': self.block_size,
+    'dropout': self.dropout,
+}
+torch.save(checkpoint, 'gpt_checkpoint.pth')
+
+2. Loading the Model to Resume Training.
+To resume training, you would first need to create an instance of your model and optimizer with the same architecture as the one you saved. Then, you load the checkpoint and apply the saved states.
+
+# First, define the model and optimizer with the same hyperparameters
+# as the saved checkpoint.
+test = GPTTest(batch_size=32, block_size=128, max_iters=5000, learning_rate=1e-3, n_embd=128, n_head=4, n_layer=52, dropout=0.1, device=device)
+
+# Load the checkpoint
+checkpoint = torch.load('gpt_checkpoint.pth')
+test.model.load_state_dict(checkpoint['model_state_dict'])
+test.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+# You can now continue training by calling test.run(). You might want to
+# adjust the starting iteration in the run loop based on checkpoint['iter'].
+
+3. Loading the Model for Inference.
+If you only want to use the trained model to generate text (inference), you don't need the optimizer state. You just need to load the model weights.
+
+# Define the model with the same architecture from the checkpoint
+model = BigramLanguageModel(n_embd=128, n_head=4, n_layer=52, block_size=128, dropout=0.1, device=device)
+
+# Load the checkpoint and extract the model state dictionary
+checkpoint = torch.load('gpt_checkpoint.pth')
+model.load_state_dict(checkpoint['model_state_dict'])
+
+# It is very important to set the model to evaluation mode.
+# This disables layers like dropout that behave differently
+# during training and inference.
+model.eval()
+
+# Now you can use the model to generate text
+context = torch.zeros((1, 1), dtype=torch.long, device=device)
+print(decode(model.generate(context, block_size=128, max_new_tokens=500)[0].tolist()))
